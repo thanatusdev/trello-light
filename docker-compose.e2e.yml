@@ -1,0 +1,58 @@
+# E2E override: an isolated stack for the Playwright suite. Run it through e2e/run.sh:
+#   docker compose -p trello-e2e -f docker-compose.yml -f docker-compose.e2e.yml up -d --wait
+# The project name gives it its own containers, network and pgdata volume, and only the web
+# app is published (port 8081), so it can run next to the dev stack.
+#
+# Every value below is a THROWAWAY for this disposable test stack. Never reuse them elsewhere.
+
+x-e2e-env: &e2e-env
+  APP_ENV: local
+  LOG_LEVEL: INFO
+  POSTGRES_USER: kanban_e2e
+  POSTGRES_PASSWORD: e2e-only-not-a-secret
+  POSTGRES_DB: kanban_e2e
+  JWT_SECRET: e2e-only-not-a-secret-0123456789abcdef0123456789abcdef
+  # Access tokens live 5 seconds, so the suite constantly exercises the refresh flow.
+  ACCESS_TOKEN_EXPIRE_SECONDS: 5
+  REFRESH_TOKEN_EXPIRE_DAYS: 1
+  # Cheap hashing keeps logins fast; never this low outside tests.
+  BCRYPT_ROUNDS: 4
+  # Relaxed, not disabled: the limiter and its Redis storage stay wired in. Every browser
+  # request reaches the API through nginx, so all tests share one client IP.
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_DEFAULT: 10000/minute
+  RATE_LIMIT_LOGIN: 1000/minute
+  RATE_LIMIT_REGISTER: 1000/minute
+  SEED_DEMO_DATA: "true"
+  DEMO_USER_PASSWORD: Demo1234!
+
+services:
+  db:
+    environment:
+      POSTGRES_USER: kanban_e2e
+      POSTGRES_PASSWORD: e2e-only-not-a-secret
+      POSTGRES_DB: kanban_e2e
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  api:
+    env_file: !reset []
+    environment: *e2e-env
+    ports: !reset []
+
+  worker:
+    env_file: !reset []
+    environment: *e2e-env
+    healthcheck:
+      interval: 5s
+      start_period: 5s
+
+  # The daily digest never fires during a run; keep it out of the stack.
+  beat:
+    profiles: [disabled]
+
+  frontend:
+    ports: !override
+      - "${E2E_PORT:-8081}:80"

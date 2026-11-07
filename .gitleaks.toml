@@ -1,0 +1,15 @@
+# gitleaks config: the default rules plus a narrow allowlist for values that are deliberately
+# committed throwaways (CI service containers, the disposable e2e stack, .env.example
+# placeholders). Add entries only for values that are provably not secrets, with a reason.
+title = "trello-light gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Throwaway credentials for CI and the e2e stack, and .env.example placeholders"
+regexes = [
+  '''(ci|e2e)-only-not-a-secret[\w-]*''',
+  '''change-me''',
+  '''Demo1234!''',
+]

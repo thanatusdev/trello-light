@@ -1,0 +1,4 @@
+# Trivy exceptions for CI's image scan (HIGH/CRITICAL with a fix available fail the build).
+# One CVE per line, each with a comment saying why it is accepted and when to revisit it, e.g.:
+#   CVE-2026-12345  # not reachable: affects X which we never call; revisit 2027-01-31
+# Prefer upgrading the base image or dependency over adding an entry here.

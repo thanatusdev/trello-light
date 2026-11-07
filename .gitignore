@@ -1,0 +1,27 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+celerybeat-schedule*
+
+# Node
+node_modules/
+dist/
+*.log
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

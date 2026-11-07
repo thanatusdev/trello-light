@@ -1,0 +1,361 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Test-only throwaway values for the CI service containers. Not secrets.
+  POSTGRES_USER: kanban
+  POSTGRES_PASSWORD: ci-only-not-a-secret
+  POSTGRES_DB: kanban_test
+  TEST_POSTGRES_DB: kanban_test
+  POSTGRES_HOST: localhost
+  POSTGRES_PORT: "5432"
+  REDIS_HOST: localhost
+  REDIS_PORT: "6379"
+  JWT_SECRET: ci-only-not-a-secret-0123456789abcdef0123456789abcdef
+  BCRYPT_ROUNDS: "4"
+  UV_VERSION: "0.13"
+  TRIVY_VERSION: v0.76.2
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  PIP_AUDIT_VERSION: 2.10.1
+
+jobs:
+  backend-quality:
+    name: Backend quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: make install-backend
+      - name: ruff check
+        run: make lint-backend RUFF_ARGS=--output-format=github
+      - name: ruff format --check
+        run: make format-check-backend
+      - name: mypy
+        run: make typecheck-backend
+
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kanban
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: kanban_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kanban -d kanban_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: make install-backend
+      - name: Alembic upgrade head
+        run: make migrate
+      - name: pytest (coverage fails under 80%)
+        run: make test-backend PYTEST_ARGS=--cov-report=xml
+      - name: Coverage summary
+        if: ${{ !cancelled() && hashFiles('backend/.coverage') != '' }}
+        working-directory: backend
+        run: |
+          {
+            echo "## Backend coverage"
+            uv run coverage report --format=markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  migrations-check:
+    name: Migrations check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kanban
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: kanban_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kanban -d kanban_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: make install-backend
+      - name: Upgrade, check for drift, downgrade to base, upgrade again
+        run: make migrations-check
+
+  frontend-quality:
+    name: Frontend quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            e2e/package-lock.json
+      - run: make install-frontend install-e2e
+      - name: ESLint (frontend, e2e)
+        run: make lint-frontend lint-e2e
+      - name: Prettier (frontend, e2e)
+        run: make format-check-frontend format-check-e2e
+      - name: tsc --noEmit (frontend, e2e)
+        run: make typecheck-frontend typecheck-e2e
+      - name: Vitest with coverage (fails under 80%)
+        run: make coverage-frontend
+      - name: Coverage summary
+        if: ${{ !cancelled() && hashFiles('frontend/coverage/coverage-summary.json') != '' }}
+        working-directory: frontend
+        run: |
+          node -e '
+            const t = require("./coverage/coverage-summary.json").total;
+            const rows = ["lines", "statements", "functions", "branches"]
+              .map((k) => `| ${k} | ${t[k].covered}/${t[k].total} | ${t[k].pct}% |`);
+            console.log(["## Frontend coverage", "", "| Metric | Covered | % |", "| --- | --- | --- |", ...rows].join("\n"));
+          ' >> "$GITHUB_STEP_SUMMARY"
+      - name: vite build
+        run: make build-frontend
+
+  api-drift:
+    name: API types drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: make install-backend install-frontend
+      - name: Regenerate frontend/src/api/schema.d.ts and fail if the committed types are stale
+        run: make api-drift
+
+  security-deps:
+    name: Security (dependencies & secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # gitleaks scans the full history
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: pip-audit (backend lockfile, all groups)
+        run: make audit-python PIP_AUDIT_VERSION="$PIP_AUDIT_VERSION"
+      - name: npm audit (frontend, e2e)
+        run: make audit-node
+      - name: Bandit
+        run: make bandit
+      - name: gitleaks
+        run: make secrets GITLEAKS="$RUNNER_TEMP/gitleaks"
+
+  security-images:
+    name: Security (image scan, ${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [backend, frontend]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.image }}
+          load: true
+          push: false
+          tags: kanban-${{ matrix.image }}:ci
+          # Shared with the e2e job, which builds the same Dockerfiles from this cache.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+      # Same flags as `make scan-images`; the action is kept here for its Trivy DB caching.
+      - name: Trivy (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: kanban-${{ matrix.image }}:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          exit-code: "1"
+          format: table
+          output: trivy-${{ matrix.image }}.txt
+      - name: Trivy summary
+        if: ${{ !cancelled() && hashFiles(format('trivy-{0}.txt', matrix.image)) != '' }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          {
+            echo "## Trivy: ${IMAGE}"
+            echo '```'
+            cat "trivy-${IMAGE}.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "trivy-${IMAGE}.txt"
+
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: make install-backend install-frontend
+      - name: pre-commit run --all-files
+        run: make pre-commit
+
+  e2e:
+    name: E2E (Playwright)
+    needs: [backend-tests, frontend-quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Same Dockerfiles and cache scopes as security-images, so these are mostly cache hits.
+      # Tags match compose's default `<project>-<service>` names, so run.sh can skip the build.
+      - name: Build backend image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          load: true
+          push: false
+          tags: |
+            trello-e2e-api:latest
+            trello-e2e-worker:latest
+          cache-from: type=gha,scope=backend
+      - name: Build frontend image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: frontend
+          load: true
+          push: false
+          tags: trello-e2e-frontend:latest
+          cache-from: type=gha,scope=frontend
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+      - run: make install-e2e
+      - name: Run the e2e stack and Playwright
+        env:
+          E2E_SKIP_BUILD: "1"
+          E2E_LOGS_DIR: ${{ github.workspace }}/e2e/stack-logs
+        run: make test-e2e
+      - name: Upload Playwright HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload traces, screenshots, videos and stack logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-traces
+          path: |
+            e2e/test-results/
+            e2e/stack-logs/
+          if-no-files-found: ignore
+          retention-days: 14
