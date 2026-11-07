@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises'
 
-import type { APIRequestContext, APIResponse } from '@playwright/test'
+import type { APIRequestContext, APIResponse, BrowserContextOptions } from '@playwright/test'
 
-import { AUTH_STORAGE_KEY, STORAGE_STATE } from './env'
+import { AUTH_STORAGE_KEY, env, STORAGE_STATE } from './env'
 
 export interface Column {
   id: string
@@ -40,19 +40,35 @@ export interface NewTask {
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'
 
-/** Reads the refresh token the setup project left in the saved browser state. */
-export async function storedRefreshToken(): Promise<string> {
-  const state = JSON.parse(await readFile(STORAGE_STATE, 'utf8')) as {
-    origins: { localStorage: { name: string; value: string }[] }[]
-  }
-  const raw = state.origins
+type StorageState = Exclude<BrowserContextOptions['storageState'], string | undefined>
+
+/**
+ * Signs in through the API and returns a refresh token for a brand-new session. Refresh
+ * tokens are single-use (rotated on every refresh), so every consumer needs its own session:
+ * sharing one would make all but the first refresh fail with 401.
+ */
+export async function login(request: APIRequestContext): Promise<string> {
+  const response = await request.post('/api/v1/auth/login', {
+    form: { username: env.email, password: env.password },
+  })
+  await expectOk(response, 'login')
+  return ((await response.json()) as { refresh_token: string }).refresh_token
+}
+
+/**
+ * The browser state the setup project saved, with its refresh token swapped for one from a
+ * fresh session, so each test's page refreshes independently of every other test.
+ */
+export async function signedInState(request: APIRequestContext): Promise<StorageState> {
+  const state = JSON.parse(await readFile(STORAGE_STATE, 'utf8')) as StorageState
+  const item = state.origins
     .flatMap((origin) => origin.localStorage)
-    .find((item) => item.name === AUTH_STORAGE_KEY)?.value
-  const token = raw
-    ? (JSON.parse(raw) as { state: { refreshToken?: string } }).state.refreshToken
-    : undefined
-  if (!token) throw new Error(`No refresh token in ${STORAGE_STATE}; did the setup project run?`)
-  return token
+    .find((entry) => entry.name === AUTH_STORAGE_KEY)
+  if (!item) throw new Error(`No auth state in ${STORAGE_STATE}; did the setup project run?`)
+  const persisted = JSON.parse(item.value) as { state: { refreshToken?: string } }
+  persisted.state.refreshToken = await login(request)
+  item.value = JSON.stringify(persisted)
+  return state
 }
 
 /**

@@ -23,6 +23,11 @@ COPY app ./app
 # ---- runtime: slim image, non-root user, no build tooling -------------------
 FROM python:3.12-slim AS runtime
 
+# Pick up Debian security fixes the slim base image hasn't been rebuilt with yet.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system app && useradd --system --gid app --home-dir /app --no-create-home app
 
 WORKDIR /app

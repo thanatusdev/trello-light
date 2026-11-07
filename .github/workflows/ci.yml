@@ -242,6 +242,10 @@ jobs:
           load: true
           push: false
           tags: kanban-${{ matrix.image }}:ci
+          # Always rebuild the runtime stage on a fresh base so the scan sees current OS
+          # security fixes rather than a cached layer; the dependency stage stays cached.
+          pull: true
+          no-cache-filters: runtime
           # Shared with the e2e job, which builds the same Dockerfiles from this cache.
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max

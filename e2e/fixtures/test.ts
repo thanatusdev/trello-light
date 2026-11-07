@@ -6,8 +6,8 @@ import { BoardPage } from '../pages/BoardPage'
 import { FilterBar } from '../pages/FilterBar'
 import { LoginPage } from '../pages/LoginPage'
 import { TaskModal } from '../pages/TaskModal'
-import { Api, storedRefreshToken } from './api'
-import { env } from './env'
+import { Api, login, signedInState } from './api'
+import { env, STORAGE_STATE } from './env'
 
 /**
  * The e2e stack issues 5-second access tokens, so any test can hit a real 401 that the app
@@ -98,9 +98,20 @@ export const test = base.extend<Fixtures>({
     { auto: true },
   ],
 
+  // Each test's page gets its own session instead of the setup project's refresh token, which
+  // is single-use and would otherwise be spent by whichever test refreshed first.
+  storageState: async ({ storageState, playwright }, use) => {
+    if (storageState !== STORAGE_STATE) return use(storageState)
+    const request = await playwright.request.newContext({ baseURL: env.baseURL })
+    const state = await signedInState(request)
+    await request.dispose()
+    await use(state)
+  },
+
+  // A separate session from the page's, so the two never rotate the same refresh token.
   api: async ({ playwright, uid }, use) => {
     const request = await playwright.request.newContext({ baseURL: env.baseURL })
-    const api = new Api(request, await storedRefreshToken())
+    const api = new Api(request, await login(request))
     await use(api)
     await api.cleanUp(uid).catch(() => undefined)
     await request.dispose()

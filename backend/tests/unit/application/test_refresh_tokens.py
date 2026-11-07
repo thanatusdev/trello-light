@@ -2,8 +2,8 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from app.application.commands.logout import Logout, LogoutHandler
 
+from app.application.commands.logout import Logout, LogoutHandler
 from app.application.commands.refresh_tokens import (
     REUSE_GRACE,
     RefreshTokens,
