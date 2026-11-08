@@ -17,8 +17,8 @@ x-e2e-env: &e2e-env
   REFRESH_TOKEN_EXPIRE_DAYS: 1
   # Cheap hashing keeps logins fast; never this low outside tests.
   BCRYPT_ROUNDS: 4
-  # Relaxed, not disabled: the limiter and its Redis storage stay wired in. Every browser
-  # request reaches the API through nginx, so all tests share one client IP.
+  # Relaxed, not disabled: the limiter and its Redis storage stay wired in. The API keys
+  # limits on the client IP nginx forwards, and every test runs from the same host.
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_DEFAULT: 10000/minute
   RATE_LIMIT_LOGIN: 1000/minute
