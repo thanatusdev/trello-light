@@ -1,7 +1,7 @@
 import { hashKey, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import { type Board, boardKeys, notifyRollback } from '@/features/board/api'
+import { type Board, boardKeys, boardMoveKey, notifyRollback } from '@/features/board/api'
 import { removeTaskFromBoard } from '@/features/board/board-state'
 
 import {
@@ -70,6 +70,7 @@ export function useSaveTask() {
 /** Removes the task from every cached board at once; rolls back with a toast on failure. */
 export function useDeleteTask() {
   const queryClient = useQueryClient()
+  const isMovingOnBoard = () => queryClient.isMutating({ mutationKey: boardMoveKey }) > 0
   return useMutation({
     mutationFn: deleteTask,
     onMutate: async (taskId) => {
@@ -81,7 +82,11 @@ export function useDeleteTask() {
       return { previous }
     },
     onError: (error, _taskId, context) => {
-      for (const [key, board] of context?.previous ?? []) queryClient.setQueryData(key, board)
+      // The snapshots predate any board move still in flight; restoring them would wipe its
+      // optimistic state. That move's own refetch brings the task back instead.
+      if (!isMovingOnBoard()) {
+        for (const [key, board] of context?.previous ?? []) queryClient.setQueryData(key, board)
+      }
       notifyRollback('delete the task', error)
     },
     onSuccess: () => {
@@ -92,7 +97,8 @@ export function useDeleteTask() {
       // can only 404; refresh everything else.
       const gone = error ? null : hashKey(taskKeys.detail(taskId))
       return Promise.all([
-        queryClient.invalidateQueries({ queryKey: boardKeys.all }),
+        // A board refetch now would undo a pending move; the last move refetches when it settles.
+        isMovingOnBoard() ? null : queryClient.invalidateQueries({ queryKey: boardKeys.all }),
         queryClient.invalidateQueries({
           queryKey: taskKeys.all,
           predicate: (query) => query.queryHash !== gone,

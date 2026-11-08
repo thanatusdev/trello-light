@@ -28,20 +28,29 @@ export const boardKeys = {
   filtered: (query: TaskFilters) => ['board', query] as const,
 }
 
-const moveTaskKey = ['board', 'move-task'] as const
-const moveColumnKey = ['board', 'move-column'] as const
+/** Prefix shared by every board move (task or column), for `isMutating` checks. */
+export const boardMoveKey = ['board', 'move'] as const
+const moveTaskKey = [...boardMoveKey, 'task'] as const
+const moveColumnKey = [...boardMoveKey, 'column'] as const
 
 /**
- * Rollback and refetch rules shared by overlapping optimistic moves. Inside a mutation's own
- * callbacks it still counts as mutating, so "only one in flight" means `=== 1`.
+ * Task and column moves share this scope, so their requests run one after another: each
+ * move's neighbour ids are computed from the optimistic board, and must not reach the
+ * server before the moves they build on have committed. `onMutate` still runs right away.
+ */
+const moveScope = { id: 'board-order' }
+
+/**
+ * Rollback and refetch rules shared by overlapping optimistic moves of either kind. Inside
+ * a mutation's own callbacks it still counts as mutating, so "only one in flight" means `=== 1`.
  *
  * - onError restores the snapshot only when no other move is in flight: that snapshot predates
  *   the other moves, so restoring it would wipe their optimistic state.
  * - onSettled refetches only when the last move settles, so a refetch can't land in between
  *   and briefly undo moves the server hasn't answered yet.
  */
-function isLastMove(queryClient: QueryClient, mutationKey: readonly string[]): boolean {
-  return queryClient.isMutating({ mutationKey }) === 1
+function isLastMove(queryClient: QueryClient): boolean {
+  return queryClient.isMutating({ mutationKey: boardMoveKey }) === 1
 }
 
 /** Board query params: every filter except the status, which the board applies itself. */
@@ -89,6 +98,7 @@ export function useMoveTask(filters: TaskFilters) {
 
   const mutation = useMutation({
     mutationKey: moveTaskKey,
+    scope: moveScope,
     mutationFn: ({ taskId, body }: MoveTaskVariables) => moveTask(taskId, body),
     onMutate: async (variables) => {
       await queryClient.cancelQueries({ queryKey: boardKeys.all })
@@ -102,13 +112,13 @@ export function useMoveTask(filters: TaskFilters) {
       return { previous }
     },
     onError: (error, _variables, context) => {
-      if (context?.previous && isLastMove(queryClient, moveTaskKey)) {
+      if (context?.previous && isLastMove(queryClient)) {
         queryClient.setQueryData(queryKey, context.previous)
       }
       notifyRollback('move the task', error)
     },
     onSettled: async () => {
-      if (!isLastMove(queryClient, moveTaskKey)) return
+      if (!isLastMove(queryClient)) return
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: boardKeys.all }),
         queryClient.invalidateQueries({ queryKey: taskKeys.all }),
@@ -167,6 +177,7 @@ export function useMoveStatus(filters: TaskFilters) {
 
   const mutation = useMutation({
     mutationKey: moveColumnKey,
+    scope: moveScope,
     mutationFn: ({ statusId, body }: MoveStatusVariables) => moveStatus(statusId, body),
     onMutate: async (variables) => {
       await queryClient.cancelQueries({ queryKey: boardKeys.all })
@@ -176,13 +187,13 @@ export function useMoveStatus(filters: TaskFilters) {
       return { previous }
     },
     onError: (error, _variables, context) => {
-      if (context?.previous && isLastMove(queryClient, moveColumnKey)) {
+      if (context?.previous && isLastMove(queryClient)) {
         queryClient.setQueryData(queryKey, context.previous)
       }
       notifyRollback('move the column', error)
     },
     onSettled: async () => {
-      if (isLastMove(queryClient, moveColumnKey)) {
+      if (isLastMove(queryClient)) {
         await queryClient.invalidateQueries({ queryKey: boardKeys.all })
       }
     },
