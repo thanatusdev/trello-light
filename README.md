@@ -5,7 +5,7 @@
 # Trello Light
 
 A Trello-like Kanban task manager: a FastAPI backend (Clean Architecture with lightweight CQRS)
-and a React SPA with drag-and-drop columns, task assignment and filtering. 
+and a React SPA with drag-and-drop columns, task assignment and filtering.
 
 ## User story
 
