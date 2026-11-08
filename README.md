@@ -106,6 +106,9 @@ builds and starts the stack, waits until the API is healthy, then prints:
 | Web app      | <http://localhost:8080>            |
 | API docs     | <http://localhost:8000/api/v1/docs> |
 
+Postgres, Redis and the API are published on `127.0.0.1` only; the web app listens on all
+interfaces so it can be opened from another device on the network.
+
 Demo logins (seeded when `SEED_DEMO_DATA=true`, the default in `.env.example`):
 `alice@example.com`, `bob@example.com` and `carol@example.com`, all with password `Demo1234!`.
 

@@ -20,7 +20,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       TEST_POSTGRES_DB: ${TEST_POSTGRES_DB:-kanban_test}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/postgres/init-test-db.sh:/docker-entrypoint-initdb.d/10-init-test-db.sh:ro
@@ -34,7 +34,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -53,7 +53,7 @@ services:
         && python -m app.infrastructure.seed
         && exec uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
