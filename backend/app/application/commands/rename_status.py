@@ -18,7 +18,9 @@ class RenameStatusHandler:
 
     async def handle(self, command: RenameStatus) -> None:
         name = StatusName(command.name)
-        status = await self._uow.statuses.get(command.status_id)
+        # Locked: ``save`` writes the position back too, so an unlocked read could undo a
+        # concurrent reorder or rebalance of this column.
+        status = await self._uow.statuses.get_for_update(command.status_id)
         if status is None:
             raise StatusNotFound()
 

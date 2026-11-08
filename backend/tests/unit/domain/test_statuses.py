@@ -24,6 +24,11 @@ def test_status_name_matches_case_insensitively() -> None:
     assert not StatusName("Done").matches(StatusName("Doing"))
 
 
+def test_status_name_matching_follows_the_database_lower() -> None:
+    # The unique index is on lower(name); casefold() would treat these as equal, lower() doesn't.
+    assert not StatusName("Straße").matches(StatusName("STRASSE"))
+
+
 def test_create_status() -> None:
     status = Status.create(name=StatusName("Done"), is_done=True, position=1024.0, now=FIXED_NOW)
 

@@ -20,8 +20,9 @@ class StatusName:
         object.__setattr__(self, "value", trimmed)
 
     def matches(self, other: "StatusName") -> bool:
-        """Names are unique case-insensitively, but stored with the casing the user typed."""
-        return self.value.casefold() == other.value.casefold()
+        """Names are unique case-insensitively, but stored with the casing the user typed.
+        Uses ``lower()`` to match the database's unique index on ``lower(name)``."""
+        return self.value.lower() == other.value.lower()
 
 
 @dataclass(slots=True)
