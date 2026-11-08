@@ -6,8 +6,11 @@ settings, so limits, storage and the on/off switch are not import-time globals.
 - Every API route has the default limit, counted per route and per caller: the user id
   when the request carries a valid access token, otherwise the client IP.
 - Login and register instead have stricter limits counted per client IP.
-- The client IP is the socket peer. ``X-Forwarded-For`` is not trusted; behind a proxy,
-  run uvicorn with ``--proxy-headers --forwarded-allow-ips=<proxy ip>``.
+- The client IP is ``request.client.host``. The app itself never reads ``X-Forwarded-For``;
+  behind a proxy, uvicorn's ``--proxy-headers --forwarded-allow-ips=<proxy ip>`` replaces
+  the socket peer with the forwarded address. In compose the API is only reachable on the
+  internal network and nginx overwrites ``X-Forwarded-For`` with ``$remote_addr``, so the
+  image and compose trust ``*``. Do not publish the API port to untrusted networks.
 - Storage errors are logged and the request is allowed (fail open).
 
 Limits are enforced by FastAPI dependencies rather than ``SlowAPIMiddleware`` or

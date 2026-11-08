@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.api.dependencies import get_notifier, get_redis, get_session
 from app.infrastructure.config import Settings
@@ -112,6 +113,26 @@ async def test_login_ignores_forwarded_for_header(client_for: ClientFor) -> None
         )
 
     assert_rate_limited(response)
+
+
+async def test_login_limit_is_per_forwarded_ip_behind_trusted_proxy(limited_app: FastAPI) -> None:
+    """How the app runs in compose: uvicorn ``--proxy-headers`` behind nginx, which sets
+    ``X-Forwarded-For`` to the real client address. Each client gets its own bucket."""
+    proxied = ProxyHeadersMiddleware(limited_app, trusted_hosts="*")  # type: ignore[arg-type]
+    transport = ASGITransport(app=proxied, client=("172.18.0.5", 12345))  # nginx
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+
+        async def login_from(ip: str) -> Response:
+            return await client.post(
+                LOGIN_URL,
+                data={"username": "a@example.com", "password": "x"},
+                headers={"X-Forwarded-For": ip},
+            )
+
+        assert [(await login_from("203.0.113.1")).status_code for _ in range(5)] == [401] * 5
+        assert_rate_limited(await login_from("203.0.113.1"))
+
+        assert (await login_from("203.0.113.2")).status_code == 401
 
 
 async def test_register_is_limited_to_three_per_minute_per_ip(client_for: ClientFor) -> None:
