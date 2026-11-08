@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { createQueryClient } from '@/app/query-client'
 import type { TaskFilters } from '@/features/filters/filters'
 import { useAuthStore } from '@/stores/auth-store'
+import { useDeleteTask } from '@/features/tasks/mutations'
 import { db, ids } from '@/test/db'
 import { API, tokens } from '@/test/handlers'
 import { server } from '@/test/server'
@@ -359,5 +360,134 @@ describe('useMoveStatus', () => {
       expect(toast.error).toHaveBeenCalledWith("Couldn't move the column. nope")
     })
     expect(names(board())).toEqual(['To do', 'Doing', 'Done'])
+  })
+})
+
+describe('overlapping board changes', () => {
+  const names = (board: Board | undefined) => board?.columns.map((c) => c.name)
+
+  function useBoardActions(filters: TaskFilters) {
+    useBoard(filters)
+    return {
+      task: useMoveTask(filters),
+      column: useMoveStatus(filters),
+      remove: useDeleteTask(),
+    }
+  }
+
+  /** Requests started against move endpoints, in order. */
+  function startedMoves() {
+    const started: string[] = []
+    server.events.on('request:start', ({ request }) => {
+      if (request.method === 'POST' && request.url.endsWith('/move')) {
+        started.push(new URL(request.url).pathname)
+      }
+    })
+    return started
+  }
+
+  it('sends a second move only after the first one has been answered', async () => {
+    const started = startedMoves()
+    const { release } = gate('post', '/tasks/:id/move')
+    const { result, board, titles } = await setup(useBoardActions)
+
+    act(() => {
+      result.current.task.move(ids.readme, ids.doing, 0)
+    })
+    act(() => {
+      result.current.column.move(ids.done, 0)
+    })
+
+    // Both changes show at once, but only the first request is on the wire.
+    await waitFor(() => {
+      expect(titles(ids.doing)).toEqual(['Write the README'])
+    })
+    await waitFor(() => {
+      expect(started).toHaveLength(1)
+    })
+    expect(started[0]).toContain(`/tasks/${ids.readme}/move`)
+
+    release()
+    await waitFor(() => {
+      expect(started).toHaveLength(2)
+    })
+    expect(started[1]).toContain(`/statuses/${ids.done}/move`)
+    // Each request was computed against the committed result of the one before it.
+    await waitFor(() => {
+      expect(names(board())).toEqual(['Done', 'To do', 'Doing'])
+    })
+    expect(titles(ids.doing)).toEqual(['Write the README'])
+  })
+
+  it('does not undo a pending column move when a task move fails', async () => {
+    let fail: () => void = () => undefined
+    const failed = new Promise<void>((resolve) => {
+      fail = resolve
+    })
+    server.use(
+      http.post(`${API}/tasks/:id/move`, async () => {
+        await failed
+        return HttpResponse.json({ detail: 'Database is down' }, { status: 500 })
+      }),
+    )
+    const { release } = gate('post', '/statuses/:id/move')
+    const { result, board } = await setup(useBoardActions)
+
+    act(() => {
+      result.current.task.move(ids.readme, ids.doing, 0)
+    })
+    act(() => {
+      result.current.column.move(ids.done, 0)
+    })
+    await waitFor(() => {
+      expect(names(board())).toEqual(['Done', 'To do', 'Doing'])
+    })
+
+    fail()
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Couldn't move the task. Database is down")
+    })
+    // The column move hasn't been answered yet: it must stay where the user put it.
+    expect(names(board())).toEqual(['Done', 'To do', 'Doing'])
+
+    release()
+    await waitFor(() => {
+      expect(result.current.column.isPending).toBe(false)
+    })
+    await waitFor(() => {
+      expect(names(board())).toEqual(['Done', 'To do', 'Doing'])
+    })
+  })
+
+  it('does not undo a pending move when a delete fails', async () => {
+    const { release } = gate('post', '/tasks/:id/move')
+    server.use(
+      http.delete(`${API}/tasks/:id`, () =>
+        HttpResponse.json({ detail: 'Database is down' }, { status: 500 }),
+      ),
+    )
+    const { result, titles } = await setup(useBoardActions)
+
+    act(() => {
+      result.current.task.move(ids.readme, ids.doing, 0)
+    })
+    await waitFor(() => {
+      expect(titles(ids.doing)).toEqual(['Write the README'])
+    })
+
+    await act(async () => {
+      await result.current.remove.mutateAsync(ids.ship).catch(() => undefined)
+    })
+    expect(toast.error).toHaveBeenCalledWith("Couldn't delete the task. Database is down")
+    expect(titles(ids.doing)).toEqual(['Write the README'])
+
+    release()
+    await waitFor(() => {
+      expect(result.current.task.isPending).toBe(false)
+    })
+    await waitFor(() => {
+      expect(titles(ids.done)).toEqual(['Ship it'])
+    })
+    expect(titles(ids.doing)).toEqual(['Write the README'])
   })
 })
