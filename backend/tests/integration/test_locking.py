@@ -16,6 +16,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.application.commands.assign_task import AssignTask, AssignTaskHandler
+from app.application.commands.rename_status import RenameStatus, RenameStatusHandler
 from app.domain.statuses import Status, StatusName
 from app.domain.tasks import Task, TaskTitle
 from app.domain.users import Email, FullName, User
@@ -118,6 +119,39 @@ async def test_concurrent_task_writes_do_not_lose_updates(
             )
         ).one()
     assert (row.title, row.assignee_id) == ("Renamed", committed.user_id)
+
+
+async def test_rename_waits_for_a_concurrent_reorder_and_keeps_its_position(
+    sessions: async_sessionmaker[AsyncSession], committed: Committed
+) -> None:
+    status_id = committed.status.id
+    new_name = f"Renamed {uuid4().hex[:8]}"
+    async with sessions() as first, sessions() as second:
+        first_uow = SqlAlchemyUnitOfWork(first)
+        await first_uow.statuses.lock_board()
+        statuses = await first_uow.statuses.list_for_update()
+        status = next(s for s in statuses if s.id == status_id)
+
+        rename = asyncio.create_task(
+            RenameStatusHandler(SqlAlchemyUnitOfWork(second)).handle(
+                RenameStatus(status_id=status_id, name=new_name)
+            )
+        )
+        await asyncio.sleep(SETTLE_SECONDS)
+        assert not rename.done(), "rename did not wait for the status row lock"
+
+        status.position = 12_345.0
+        await first_uow.statuses.save(status)
+        await first_uow.commit()
+        await rename
+
+    async with sessions() as check:
+        row = (
+            await check.execute(
+                select(StatusModel.name, StatusModel.position).where(StatusModel.id == status_id)
+            )
+        ).one()
+    assert (row.name, row.position) == (new_name, 12_345.0)
 
 
 async def test_get_for_update_locks_the_task_row(

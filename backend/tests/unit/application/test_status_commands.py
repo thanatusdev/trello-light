@@ -92,6 +92,14 @@ async def test_rename_status(uow: FakeUnitOfWork) -> None:
     assert uow.commits == 1
 
 
+async def test_rename_status_locks_the_column(uow: FakeUnitOfWork) -> None:
+    (status,) = await _seed(uow, "Todo")
+
+    await RenameStatusHandler(uow).handle(RenameStatus(status_id=status.id, name="To Do"))
+
+    assert uow.statuses.locked == [status.id]
+
+
 async def test_rename_status_to_different_casing_of_itself(uow: FakeUnitOfWork) -> None:
     (status,) = await _seed(uow, "todo")
 
